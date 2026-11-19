@@ -1012,7 +1012,7 @@ export function FoundryWorkspace() {
               >
                 <UploadSimple className="h-7 w-7 text-[#64748B]" weight="duotone" />
                 <p className="mt-2 text-sm font-medium text-[#0F1722]">
-                  Drop a `.glb` from Aholo 3D Studio or click to browse
+                  Drop a .glb from Aholo 3D Studio or click to browse
                 </p>
                 <p className="mt-1 font-mono text-[11px] text-[#64748B]">
                   Reads binary glTF 2.0 vertex bounds &amp; sub-meshes client-side

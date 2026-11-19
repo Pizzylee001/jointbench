@@ -390,12 +390,18 @@ function ArticulatedGlbModel({
     loadedRoot.traverse((obj) => {
       if ((obj as THREE.Mesh).isMesh) {
         const srcMesh = obj as THREE.Mesh;
-        const name = srcMesh.name || srcMesh.parent?.name || `part_${idx}`;
+        const candidateName = srcMesh.name || srcMesh.parent?.name || "";
+        const indexedPartName = `part_${idx}`;
+        const resolvedName = partRoleMap.has(candidateName)
+          ? candidateName
+          : partRoleMap.has(indexedPartName)
+            ? indexedPartName
+            : assembly.parts[idx]?.meshName ?? indexedPartName;
         idx++;
-        const role = partRoleMap.get(name) ?? "base";
+        const role = partRoleMap.get(resolvedName) ?? "base";
 
         const clone = srcMesh.clone();
-        clone.userData = { meshName: name, role };
+        clone.userData = { meshName: resolvedName, role };
 
         // Apply world transform directly to cloned mesh so separating parents preserves exact position
         const mat = srcMesh.matrixWorld.clone();
@@ -407,8 +413,8 @@ function ArticulatedGlbModel({
           if (origMat && "clone" in origMat) {
             const tinted = (origMat as THREE.MeshStandardMaterial).clone();
             if ("emissive" in tinted) {
-              tinted.emissive = new THREE.Color("#1D4ED8");
-              tinted.emissiveIntensity = 0.24;
+              tinted.emissive = new THREE.Color("#2563EB");
+              tinted.emissiveIntensity = 0.28;
             }
             clone.material = tinted;
           }
@@ -427,7 +433,7 @@ function ArticulatedGlbModel({
     });
 
     return { baseGroup: bGroup, movingGroup: mGroup };
-  }, [loadedRoot, partRoleMap, highlightMoving, assembly.joint.pivot]);
+  }, [loadedRoot, partRoleMap, highlightMoving, assembly.joint.pivot, assembly.parts]);
 
   // Drive live prismatic translation or revolute rotation every frame cleanly
   useFrame(() => {

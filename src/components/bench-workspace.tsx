@@ -369,7 +369,7 @@ export function BenchWorkspace({ assemblyId }: BenchWorkspaceProps) {
               >
                 {allAssemblies.map((a) => (
                   <option key={a.id} value={a.id}>
-                    {a.name} ({a.lastRun?.status.toUpperCase() ?? "NEW"})
+                    {a.name}
                   </option>
                 ))}
               </select>

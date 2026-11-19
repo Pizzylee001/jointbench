@@ -1,9 +1,10 @@
 "use client";
 
-import React, { Component, Suspense, useMemo, useRef, useState } from "react";
+import React, { Component, useEffect, useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { ContactShadows, Grid, OrbitControls, useGLTF } from "@react-three/drei";
+import { ContactShadows, Grid, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import {
   Cube,
   ArrowsOutLineHorizontal,
@@ -11,16 +12,11 @@ import {
   Sparkle,
   WarningCircle,
 } from "@phosphor-icons/react";
+import { loadGlbBlob } from "@/lib/assembly-store";
 import type { AssemblyRecord } from "@/lib/types";
 
-const PART_COLORS = [
-  "#64748b", // base chassis slate
-  "#2563eb", // primary moving part - calibration cobalt
-  "#f59e0b", // secondary moving / clasp - signal amber
-  "#15803d", // tertiary part - pass emerald
-  "#0ea5e9", // auxiliary trim - cyan
-  "#7c3aed", // extra part - indigo
-];
+const BASE_COLORS = ["#64748b", "#475569", "#94a3b8", "#334155"];
+const MOVING_COLORS = ["#2563eb", "#f59e0b", "#0ea5e9", "#10b981"];
 
 interface FoundryComparatorProps {
   assembly: AssemblyRecord;
@@ -45,136 +41,245 @@ class PreviewErrorBoundary extends Component<
   }
 }
 
-function RawGlbMesh({ url }: { url: string }) {
-  const gltf = useGLTF(url);
+function normalizeAndCenter(root: THREE.Group): {
+  scale: number;
+  center: THREE.Vector3;
+} {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+  const maxDim = Math.max(size.x, size.y, size.z, 0.001);
+  const scale = 0.82 / maxDim;
+  root.scale.setScalar(scale);
+  root.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+  return { scale, center };
+}
+
+function RawGlbScene({
+  url,
+  localBlobKey,
+  sharedYawRef,
+}: {
+  url: string;
+  localBlobKey?: string;
+  sharedYawRef: React.MutableRefObject<number>;
+}) {
+  const [sceneObj, setSceneObj] = useState<THREE.Group | null>(null);
   const groupRef = useRef<THREE.Group>(null);
 
-  const cloned = useMemo(() => {
-    const root = gltf.scene.clone(true);
-    const box = new THREE.Box3().setFromObject(root);
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-    const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-    const scale = 0.85 / maxDim;
-    root.scale.setScalar(scale);
-    root.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
+  useEffect(() => {
+    let active = true;
+    let blobUrl: string | null = null;
+    const loader = new GLTFLoader();
 
-    root.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) {
-        const mesh = obj as THREE.Mesh;
-        mesh.material = new THREE.MeshStandardMaterial({
-          color: "#94a3b8",
-          roughness: 0.55,
-          metalness: 0.15,
+    async function load() {
+      try {
+        let src = url;
+        if (!src && localBlobKey) {
+          const buf = await loadGlbBlob(localBlobKey);
+          if (buf) {
+            blobUrl = URL.createObjectURL(new Blob([buf], { type: "model/gltf-binary" }));
+            src = blobUrl;
+          }
+        } else if (src.startsWith("http")) {
+          src = `/api/lux3d/fetch-glb?url=${encodeURIComponent(src)}`;
+        }
+        if (!src) return;
+
+        const gltf = await loader.loadAsync(src);
+        if (!active) return;
+
+        const root = gltf.scene.clone(true);
+        normalizeAndCenter(root);
+
+        root.traverse((obj) => {
+          if ((obj as THREE.Mesh).isMesh) {
+            const mesh = obj as THREE.Mesh;
+            mesh.material = new THREE.MeshStandardMaterial({
+              color: "#94a3b8",
+              roughness: 0.48,
+              metalness: 0.16,
+            });
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+          }
         });
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
+        setSceneObj(root);
+      } catch {
+        // Fallback handled gracefully by empty scene
       }
-    });
-    return root;
-  }, [gltf.scene]);
+    }
 
-  useFrame((_, delta) => {
+    load();
+    return () => {
+      active = false;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [url, localBlobKey]);
+
+  useFrame(() => {
     if (groupRef.current) {
-      groupRef.current.rotation.y += delta * 0.18;
+      groupRef.current.rotation.y = sharedYawRef.current;
     }
   });
 
+  if (!sceneObj) return null;
   return (
     <group ref={groupRef}>
-      <primitive object={cloned} />
+      <primitive object={sceneObj} />
     </group>
   );
 }
 
-function SplitGlbMesh({
+function SplitGlbScene({
   url,
+  localBlobKey,
   exploded,
-  partRoles,
+  assembly,
+  sharedYawRef,
 }: {
   url: string;
+  localBlobKey?: string;
   exploded: boolean;
-  partRoles: Record<string, "base" | "moving">;
+  assembly: AssemblyRecord;
+  sharedYawRef: React.MutableRefObject<number>;
 }) {
-  const gltf = useGLTF(url);
-  const groupRef = useRef<THREE.Group>(null);
-
-  const { cloned, meshRecords } = useMemo(() => {
-    const root = gltf.scene.clone(true);
-    const box = new THREE.Box3().setFromObject(root);
-    const size = new THREE.Vector3();
-    const center = new THREE.Vector3();
-    box.getSize(size);
-    box.getCenter(center);
-    const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-    const scale = 0.85 / maxDim;
-    root.scale.setScalar(scale);
-    root.position.set(-center.x * scale, -box.min.y * scale, -center.z * scale);
-
-    const records: Array<{
+  const [loadedData, setLoadedData] = useState<{
+    root: THREE.Group;
+    records: Array<{
       mesh: THREE.Mesh;
       basePos: THREE.Vector3;
       explodeDir: THREE.Vector3;
-    }> = [];
+    }>;
+  } | null>(null);
+  const groupRef = useRef<THREE.Group>(null);
 
-    let colorIdx = 0;
-    root.traverse((obj) => {
-      if ((obj as THREE.Mesh).isMesh) {
-        const mesh = obj as THREE.Mesh;
-        const mBox = new THREE.Box3().setFromObject(mesh);
-        const mCenter = new THREE.Vector3();
-        mBox.getCenter(mCenter);
+  const partRoleMap = useMemo(() => {
+    const map = new Map<string, "base" | "moving">();
+    for (const p of assembly.parts) {
+      map.set(p.meshName, p.role);
+    }
+    return map;
+  }, [assembly.parts]);
 
-        const role = partRoles[mesh.name] ?? (colorIdx === 0 ? "base" : "moving");
-        const colorHex =
-          role === "moving"
-            ? "#2563eb"
-            : PART_COLORS[colorIdx % PART_COLORS.length];
+  useEffect(() => {
+    let active = true;
+    let blobUrl: string | null = null;
+    const loader = new GLTFLoader();
 
-        mesh.material = new THREE.MeshStandardMaterial({
-          color: colorHex,
-          roughness: 0.42,
-          metalness: 0.18,
-          emissive: role === "moving" ? "#1d4ed8" : "#000000",
-          emissiveIntensity: role === "moving" ? 0.12 : 0,
-        });
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-
-        const dir = mCenter.clone().sub(center);
-        if (dir.lengthSq() < 0.0001) {
-          dir.set(0, 0.25, 0.15);
-        } else {
-          dir.normalize();
+    async function load() {
+      try {
+        let src = url;
+        if (localBlobKey) {
+          const buf = await loadGlbBlob(localBlobKey);
+          if (buf) {
+            blobUrl = URL.createObjectURL(new Blob([buf], { type: "model/gltf-binary" }));
+            src = blobUrl;
+          }
+        } else if (src.startsWith("http")) {
+          src = `/api/lux3d/fetch-glb?url=${encodeURIComponent(src)}`;
         }
-        records.push({
-          mesh,
-          basePos: mesh.position.clone(),
-          explodeDir: dir,
-        });
-        colorIdx++;
-      }
-    });
+        if (!src) return;
 
-    return { cloned: root, meshRecords: records };
-  }, [gltf.scene, partRoles]);
+        const gltf = await loader.loadAsync(src);
+        if (!active) return;
+
+        const root = gltf.scene.clone(true);
+        const { center } = normalizeAndCenter(root);
+
+        const records: Array<{
+          mesh: THREE.Mesh;
+          basePos: THREE.Vector3;
+          explodeDir: THREE.Vector3;
+        }> = [];
+
+        let idx = 0;
+        let movingCount = 0;
+        let baseCount = 0;
+
+        root.traverse((obj) => {
+          if ((obj as THREE.Mesh).isMesh) {
+            const mesh = obj as THREE.Mesh;
+            const candidateName = mesh.name || mesh.parent?.name || "";
+            const indexedName = `part_${idx}`;
+            const resolvedName = partRoleMap.has(candidateName)
+              ? candidateName
+              : partRoleMap.has(indexedName)
+                ? indexedName
+                : assembly.parts[idx]?.meshName ?? indexedName;
+            const role = partRoleMap.get(resolvedName) ?? (idx === 0 ? "base" : "moving");
+
+            const mBox = new THREE.Box3().setFromObject(mesh);
+            const mCenter = new THREE.Vector3();
+            mBox.getCenter(mCenter);
+
+            const colorHex =
+              role === "moving"
+                ? MOVING_COLORS[movingCount++ % MOVING_COLORS.length]
+                : BASE_COLORS[baseCount++ % BASE_COLORS.length];
+
+            mesh.material = new THREE.MeshStandardMaterial({
+              color: colorHex,
+              roughness: 0.38,
+              metalness: 0.2,
+              emissive: role === "moving" ? colorHex : "#000000",
+              emissiveIntensity: role === "moving" ? 0.16 : 0,
+            });
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+
+            const dir = mCenter.clone().sub(center);
+            if (dir.lengthSq() < 0.0005) {
+              dir.set(0, role === "moving" ? 0.45 : -0.1, role === "moving" ? 0.85 : -0.2);
+            }
+            dir.normalize();
+            if (role === "base") {
+              dir.multiplyScalar(0.25);
+            }
+
+            records.push({
+              mesh,
+              basePos: mesh.position.clone(),
+              explodeDir: dir,
+            });
+            idx++;
+          }
+        });
+
+        setLoadedData({ root, records });
+      } catch {
+        // Handled cleanly
+      }
+    }
+
+    load();
+    return () => {
+      active = false;
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [url, localBlobKey, partRoleMap, assembly.parts]);
 
   useFrame((_, delta) => {
+    sharedYawRef.current += delta * 0.22;
     if (groupRef.current) {
-      groupRef.current.rotation.y += delta * 0.18;
+      groupRef.current.rotation.y = sharedYawRef.current;
     }
-    const targetAmt = exploded ? 0.14 : 0;
-    for (const rec of meshRecords) {
-      const target = rec.basePos.clone().addScaledVector(rec.explodeDir, targetAmt);
-      rec.mesh.position.lerp(target, Math.min(1, delta * 8));
+    if (loadedData) {
+      const targetAmt = exploded ? 0.14 : 0;
+      for (const rec of loadedData.records) {
+        const target = rec.basePos.clone().addScaledVector(rec.explodeDir, targetAmt);
+        rec.mesh.position.lerp(target, Math.min(1, delta * 9));
+      }
     }
   });
 
+  if (!loadedData) return null;
   return (
     <group ref={groupRef}>
-      <primitive object={cloned} />
+      <primitive object={loadedData.root} />
     </group>
   );
 }
@@ -201,7 +306,6 @@ function SchematicComparatorFallback({
         </defs>
         <rect width="640" height="340" fill="url(#foundryGrid)" />
 
-        {/* Left: Raw Monolithic */}
         <g clipPath={`inset(0 ${100 - curtainPct}% 0 0)`}>
           <rect x="210" y="90" width="220" height="160" rx="10" fill="#64748b" fillOpacity="0.45" stroke="#94a3b8" strokeWidth="2" />
           <text x="320" y="176" textAnchor="middle" fill="#cbd5e1" fontSize="13" fontFamily="monospace">
@@ -209,7 +313,6 @@ function SchematicComparatorFallback({
           </text>
         </g>
 
-        {/* Right: Part-Split */}
         <g clipPath={`inset(0 0 0 ${curtainPct}%)`}>
           {assembly.parts.map((part, i) => {
             const offset = exploded ? (i % 2 === 0 ? -10 : 14) : 0;
@@ -267,6 +370,7 @@ export function FoundryComparator({
 }: FoundryComparatorProps) {
   const [curtainPct, setCurtainPct] = useState(50);
   const [exploded, setExploded] = useState(true);
+  const sharedYawRef = useRef(-0.42);
   const webglReady = React.useSyncExternalStore(
     subscribeWebgl,
     getWebglClientSnapshot,
@@ -275,14 +379,6 @@ export function FoundryComparator({
 
   const rawUrl = overrideRawUrl ?? assembly.rawGlbUrl ?? assembly.splitGlbUrl;
   const splitUrl = overrideSplitUrl ?? assembly.splitGlbUrl;
-
-  const partRoles = useMemo(() => {
-    const map: Record<string, "base" | "moving"> = {};
-    for (const p of assembly.parts) {
-      map[p.meshName] = p.role;
-    }
-    return map;
-  }, [assembly.parts]);
 
   const rawCount = assembly.lux3dMeta?.rawMeshCount ?? 1;
   const splitCount = assembly.parts.length;
@@ -353,14 +449,15 @@ export function FoundryComparator({
               <Canvas
                 shadows
                 dpr={[1, 1.5]}
-                camera={{ position: [1.35, 1.05, 1.45], fov: 38 }}
+                camera={{ position: [1.35, 0.72, 1.55], fov: 36 }}
                 gl={{ antialias: true, preserveDrawingBuffer: true }}
               >
                 <color attach="background" args={["#0b111b"]} />
-                <ambientLight intensity={0.75} />
-                <directionalLight position={[4, 6, 4]} intensity={1.3} castShadow />
-                <directionalLight position={[-3, 3, -3]} intensity={0.45} color="#93c5fd" />
+                <ambientLight intensity={0.85} />
+                <directionalLight position={[4, 6, 4]} intensity={1.4} castShadow />
+                <directionalLight position={[-3, 3, -3]} intensity={0.65} color="#93c5fd" />
                 <Grid
+                  position={[0, -0.45, 0]}
                   args={[6, 6]}
                   cellSize={0.2}
                   cellColor="#1e293b"
@@ -368,11 +465,15 @@ export function FoundryComparator({
                   sectionColor="#334155"
                   fadeDistance={6}
                 />
-                <ContactShadows position={[0, 0.002, 0]} opacity={0.45} scale={3} blur={2} />
-                <Suspense fallback={null}>
-                  <SplitGlbMesh url={splitUrl} exploded={exploded} partRoles={partRoles} />
-                </Suspense>
-                <OrbitControls enablePan={false} minDistance={0.8} maxDistance={3.2} />
+                <ContactShadows position={[0, -0.448, 0]} opacity={0.45} scale={3} blur={2} />
+                <SplitGlbScene
+                  url={splitUrl}
+                  localBlobKey={assembly.localBlobKey}
+                  exploded={exploded}
+                  assembly={assembly}
+                  sharedYawRef={sharedYawRef}
+                />
+                <OrbitControls enablePan={false} target={[0, 0, 0]} minDistance={1.1} maxDistance={3.2} />
               </Canvas>
             </div>
 
@@ -384,13 +485,15 @@ export function FoundryComparator({
               <Canvas
                 shadows
                 dpr={[1, 1.5]}
-                camera={{ position: [1.35, 1.05, 1.45], fov: 38 }}
+                camera={{ position: [1.35, 0.72, 1.55], fov: 36 }}
                 gl={{ antialias: true, preserveDrawingBuffer: true }}
               >
                 <color attach="background" args={["#111827"]} />
-                <ambientLight intensity={0.75} />
-                <directionalLight position={[4, 6, 4]} intensity={1.2} />
+                <ambientLight intensity={0.95} />
+                <directionalLight position={[4, 6, 4]} intensity={1.4} />
+                <directionalLight position={[-3, 2, -2]} intensity={0.6} color="#e2e8f0" />
                 <Grid
+                  position={[0, -0.45, 0]}
                   args={[6, 6]}
                   cellSize={0.2}
                   cellColor="#1f2937"
@@ -398,9 +501,11 @@ export function FoundryComparator({
                   sectionColor="#374151"
                   fadeDistance={6}
                 />
-                <Suspense fallback={null}>
-                  <RawGlbMesh url={rawUrl} />
-                </Suspense>
+                <RawGlbScene
+                  url={rawUrl}
+                  localBlobKey={assembly.localBlobKey}
+                  sharedYawRef={sharedYawRef}
+                />
               </Canvas>
             </div>
           </PreviewErrorBoundary>

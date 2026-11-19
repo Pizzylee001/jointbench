@@ -43,7 +43,7 @@ export function CalibrationStage2D({
     return [sx, sy];
   };
 
-  const [baseSvgX, baseSvgY] = toSvg(pose.base);
+  const [baseSvgX] = toSvg(pose.base);
   const [shSvgX, shSvgY] = toSvg(pose.shoulder);
   const [elSvgX, elSvgY] = toSvg(pose.elbow);
   const [eeSvgX, eeSvgY] = toSvg(pose.ee);
