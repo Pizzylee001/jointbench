@@ -12,6 +12,8 @@ Built for the **Manycore Aholo Global 3D AI Hackathon** (Embodied AI & Robotics 
 ![Aholo Lux3D](https://img.shields.io/badge/Aholo_Lux3D-G1--Turbo_%2B_Part_Split-15803D?style=flat-square)
 ![URDF 1.0](https://img.shields.io/badge/Export-URDF_1.0_ZIP-D97706?style=flat-square)
 
+**[Live Application (jointbench.vercel.app)](https://jointbench.vercel.app/)** · **[1080p Motion Demo Video](https://drive.google.com/file/d/1dJ8ZuoLSKU80fTny3TPIVQS_ssowl5a2/view?usp=sharing)** · **[Project Report (PDF)](https://drive.google.com/file/d/1IIj5lmT4yYmwle62tVu58egcGh1Nui_2/view?usp=sharing)**
+
 </div>
 
 ---
